@@ -5,12 +5,18 @@ Werkzeug Documentation:  http://werkzeug.pocoo.org/documentation/
 This file creates your application.
 """
 
-from app import app, db, login_manager
-from flask import render_template, request, redirect, url_for, flash
-from flask_login import login_user, logout_user, current_user, login_required
-from forms import LoginForm
-from models import UserProfile
 
+import os
+from flask import session,render_template, request, redirect, url_for, jsonify,flash
+SECRET_KEY="super secure key"
+from random import randint
+from werkzeug.utils import secure_filename
+from app.models import User
+from sqlalchemy.sql import exists
+from datetime import *
+from app import app,db
+import time
+from form import ProfileForm
 ###
 # Routing for your application.
 ###
@@ -20,84 +26,70 @@ def home():
     """Render website's home page."""
     return render_template('home.html')
 
+
 @app.route('/about/')
 def about():
     """Render the website's about page."""
-    return render_template('about.html', name="Mary Jane")
+    return render_template('about.html')
 
-@app.route('/secure-page/')
-@login_required
-def secure_page():
-    """Render a secure page on our website that only logged in users can access."""
-    return render_template('secure_page.html')
+@app.route('/profile/',methods=['GET','POST'])
+def profile_add():
+    form = ProfileForm(csrf_enabled=False)
+    if request.method == 'POST':
+        if form.validate_on_submit():
+            username = request.form['username'].strip()
+            first_name = request.form['first_name'].strip()
+            last_name = request.form['last_name'].strip()
+            sex = request.form['sex']
+            age = request.form['age']
+            biography = request.form['biography']
+            image = request.files['image']
+            while True:
+                userid = randint(620000000,620099999)
+                if not db.session.query(exists().where(User.userid == str(userid))).scalar():
+                    break
+            filename = secure_filename(image.filename)
+            image.save(os.path.join('app/static/uploads', filename))
+            profile_added_on = datetime.now()
+            user = User(userid,first_name,last_name,username,sex,age,biography,filename,profile_added_on)
+            db.session.add(user)
+            db.session.commit()
+            flash("User Successfully Added", category='success')
+            return redirect('/profiles')
+    return render_template('full_profile.html',form=form)
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if current_user.is_authenticated:
-        # if user is already logged in, just redirec them to our secure page
-        # or some other page like a dashboard
-        return redirect(url_for('secure_page'))
+@app.route('/profile/<userid>', methods=['POST', 'GET'])
+def selectedprofile(userid):
+  user = User.query.filter_by(userid=userid).first()
+  if not user:
+      flash("Sorry Couldn't Find User" , category="danger")
+  else:
+      image = '/static/uploads/' + user.image
+      if request.method == 'POST' and request.headers['Content-Type']== 'application/json':
+            return jsonify(userid=user.userid, image=image,username=user.username, sex=user.sex, age=user.age, biography=user.biography, profile_added_on=user.profile_added_on)
+      else:
+            user = {'id':user.userid,'image':image, 'username':user.username,'first_name':user.first_name, 'last_name':user.last_name,'age':user.age, 'sex':user.sex, 'biography':user.biography,'profile_added_on':timeinfo(user.profile_added_on)}
+            return render_template('profile.html', user=user)
+  return redirect(url_for("profiles"))
 
-    # Here we use a class of some kind to represent and validate our
-    # client-side form data. For example, WTForms is a library that will
-    # handle this for us, and we use a custom LoginForm to validate.
-    form = LoginForm()
-    # Login and validate the user.
-    if request.method == 'POST' and form.validate_on_submit():
-        # Query our database to see if the username and password entered
-        # match a user that is in the database.
-        username = form.username.data
-        password = form.password.data
+def timeinfo(entry):
+    day = time.strftime("%a")
+    date = time.strftime("%d")
+    if (date <10):
+        date = date.lstrip('0')
+    month = time.strftime("%b")
+    year = time.strftime("%Y")
+    return day + ", " + date + " " + month + " " + year
 
-        user = UserProfile.query.filter_by(username=username, password=password)\
-        .first()
-
-        if user is not None:
-            # If the user is not blank, meaning if a user was actually found,
-            # then login the user and create the user session.
-            # user should be an instance of your `User` class
-            login_user(user)
-
-            flash('Logged in successfully.', 'success')
-            next = request.args.get('next')
-            return redirect(url_for('secure_page'))
-        else:
-            flash('Username or Password is incorrect.', 'danger')
-
-    flash_errors(form)
-    return render_template('login.html', form=form)
-
-@app.route("/logout")
-@login_required
-def logout():
-    # Logout the user and end the session
-    logout_user()
-    flash('You have been logged out.', 'danger')
-    return redirect(url_for('home'))
-
-@login_manager.user_loader
-def load_user(id):
-    return UserProfile.query.get(int(id))
-
-# Flash errors from the form if validation fails
-def flash_errors(form):
-    for field, errors in form.errors.items():
-        for error in errors:
-            flash(u"Error in the %s field - %s" % (
-                getattr(form, field).label.text,
-                error
-            ), 'danger')
-
-
-###
-# The functions below should be applicable to all Flask apps.
-###
-
-@app.route('/<file_name>.txt')
-def send_text_file(file_name):
-    """Send your static text file."""
-    file_dot_text = file_name + '.txt'
-    return app.send_static_file(file_dot_text)
+@app.route('/profiles', methods=["GET", "POST"])
+def profiles():
+  users = db.session.query(User).all()
+  userlist=[]
+  for user in users:
+    userlist.append({'username':user.username,'userid':user.userid})
+    if request.method == 'POST' and request.headers['Content-Type']== 'application/json':
+        return jsonify(users=userlist)
+  return render_template('profiles.html', users=users)
 
 
 @app.after_request
@@ -107,7 +99,7 @@ def add_header(response):
     and also to cache the rendered page for 10 minutes.
     """
     response.headers['X-UA-Compatible'] = 'IE=Edge,chrome=1'
-    response.headers['Cache-Control'] = 'public, max-age=0'
+    response.headers['Cache-Control'] = 'public, max-age=600'
     return response
 
 
@@ -118,4 +110,4 @@ def page_not_found(error):
 
 
 if __name__ == '__main__':
-    app.run(debug=True,host="0.0.0.0",port="8080")
+    app.run(debug=True,host="0.0.0.0",port="5000")
